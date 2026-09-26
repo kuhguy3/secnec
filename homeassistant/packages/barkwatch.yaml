@@ -1,0 +1,552 @@
+# BarkWatch Home Assistant package
+#
+# Install: copy to /config/packages/barkwatch.yaml and make sure configuration.yaml has
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Entities created by BarkWatch via MQTT discovery (node_id "garden"):
+#   binary_sensor.barkwatch_garden_barking     sensor.barkwatch_garden_level
+#   sensor.barkwatch_garden_noise_floor        sensor.barkwatch_garden_bark_level
+#   sensor.barkwatch_garden_episodes_today     sensor.barkwatch_garden_bark_minutes_today
+#   sensor.barkwatch_garden_episodes_last_hour sensor.barkwatch_garden_episodes_7_days
+#   sensor.barkwatch_garden_first_bark_today   sensor.barkwatch_garden_last_episode
+#   sensor.barkwatch_garden_weekly_report      event.barkwatch_garden_episode
+#
+# Replace these placeholders throughout this file:
+#   media_player.bedroom_speaker   -> the speaker next to your bed
+#   notify.mobile_app_my_phone     -> your phone's notify service
+#
+# Sleep-noise audio: run scripts/generate_noise.sh and copy the mp3 files to /media/sleep/
+
+input_boolean:
+  barkwatch_notifications:
+    name: Bark notifications
+    icon: mdi:bell-ring
+  barkwatch_notify_quiet_hours_only:
+    name: Notify only during quiet hours
+    icon: mdi:weather-night
+  barkwatch_sleep_protection:
+    name: Sleep protection
+    icon: mdi:sleep
+  barkwatch_sleep_protection_weekends_only:
+    name: Sleep protection only on weekends/holidays
+    icon: mdi:calendar-weekend
+  barkwatch_bedroom_occupied:
+    name: Someone is sleeping in the bedroom
+    icon: mdi:bed
+  barkwatch_noise_stop_on_silence:
+    name: Stop noise after barking stops
+    icon: mdi:volume-off
+  barkwatch_noise_playing:
+    name: Sleep noise started by BarkWatch
+    icon: mdi:waveform
+  barkwatch_preemptive_noise:
+    name: Start noise before the usual first bark
+    icon: mdi:clock-start
+
+input_number:
+  barkwatch_alert_episodes_per_hour:
+    name: Alert when episodes in last hour ≥
+    min: 1
+    max: 30
+    step: 1
+    icon: mdi:counter
+  barkwatch_alert_bark_minutes_today:
+    name: Alert when bark minutes today ≥
+    min: 1
+    max: 120
+    step: 1
+    unit_of_measurement: min
+  barkwatch_alert_cooldown_minutes:
+    name: Alert cooldown
+    min: 5
+    max: 240
+    step: 5
+    unit_of_measurement: min
+  barkwatch_noise_base_volume:
+    name: Sleep noise base volume
+    min: 0.05
+    max: 0.6
+    step: 0.01
+  barkwatch_noise_max_volume:
+    name: Sleep noise max volume
+    min: 0.1
+    max: 0.8
+    step: 0.01
+  barkwatch_noise_db_per_step:
+    name: Volume +0.01 per this many dB above ambient
+    min: 0.5
+    max: 5
+    step: 0.5
+    unit_of_measurement: dB
+  barkwatch_noise_quiet_minutes:
+    name: Stop noise after quiet for
+    min: 5
+    max: 120
+    step: 5
+    unit_of_measurement: min
+
+input_datetime:
+  barkwatch_quiet_start:
+    name: Quiet hours start
+    has_date: false
+    has_time: true
+  barkwatch_quiet_end_weekday:
+    name: Quiet hours end (workdays)
+    has_date: false
+    has_time: true
+  barkwatch_quiet_end_weekend:
+    name: Quiet hours end (weekends/holidays)
+    has_date: false
+    has_time: true
+
+input_select:
+  barkwatch_noise_colour:
+    name: Sleep noise colour
+    options: [Brown, Pink, White]
+    icon: mdi:palette
+
+template:
+  - binary_sensor:
+      # Weekend or public holiday. Uses the Workday integration if you have it
+      # (binary_sensor.workday_sensor), otherwise just Saturday/Sunday.
+      - name: BarkWatch day off
+        unique_id: barkwatch_day_off
+        icon: mdi:calendar-weekend
+        state: >
+          {{ now().isoweekday() in [6, 7] or is_state('binary_sensor.workday_sensor', 'off') }}
+
+      - name: BarkWatch quiet hours
+        unique_id: barkwatch_quiet_hours
+        icon: mdi:weather-night
+        state: >
+          {% set t = now().strftime('%H:%M:%S') %}
+          {% set start = states('input_datetime.barkwatch_quiet_start') %}
+          {% set end = states('input_datetime.barkwatch_quiet_end_weekend')
+                       if is_state('binary_sensor.barkwatch_day_off', 'on')
+                       else states('input_datetime.barkwatch_quiet_end_weekday') %}
+          {{ t >= start or t < end }}
+
+  - sensor:
+      # Volume for the sleep-noise speaker: base volume plus a step for every few dB the
+      # bark exceeded the ambient level, capped at the configured maximum.
+      - name: BarkWatch noise target volume
+        unique_id: barkwatch_noise_target_volume
+        icon: mdi:volume-high
+        state: >
+          {% set base = states('input_number.barkwatch_noise_base_volume') | float(0.2) %}
+          {% set maxv = states('input_number.barkwatch_noise_max_volume') | float(0.45) %}
+          {% set per = states('input_number.barkwatch_noise_db_per_step') | float(2) %}
+          {% set bark = states('sensor.barkwatch_garden_bark_level') | float(-90) %}
+          {% set floor = states('sensor.barkwatch_garden_noise_floor') | float(-60) %}
+          {% set excess = [bark - floor, 0] | max %}
+          {{ [base + (excess / per) * 0.01, maxv] | min | round(2) }}
+
+script:
+  barkwatch_noise_start:
+    alias: BarkWatch – start sleep noise
+    icon: mdi:waveform
+    mode: single
+    fields:
+      speaker:
+        description: Media player in the bedroom
+        default: media_player.bedroom_speaker
+        selector:
+          entity:
+            domain: media_player
+    sequence:
+      - variables:
+          speaker: "{{ speaker | default('media_player.bedroom_speaker') }}"
+          colour: "{{ states('input_select.barkwatch_noise_colour') | lower }}"
+          target: "{{ states('sensor.barkwatch_noise_target_volume') | float(0.25) }}"
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.barkwatch_noise_playing
+      - action: media_player.volume_set
+        target:
+          entity_id: "{{ speaker }}"
+        data:
+          volume_level: 0.05
+      - action: media_player.play_media
+        target:
+          entity_id: "{{ speaker }}"
+        data:
+          media_content_id: "media-source://media_source/local/sleep/{{ colour }}_noise.mp3"
+          media_content_type: music
+      - action: media_player.repeat_set
+        continue_on_error: true   # not every player supports repeat
+        target:
+          entity_id: "{{ speaker }}"
+        data:
+          repeat: one
+      # Fade in over ~20 s so the noise itself does not wake anyone
+      - repeat:
+          count: 10
+          sequence:
+            - action: media_player.volume_set
+              target:
+                entity_id: "{{ speaker }}"
+              data:
+                volume_level: "{{ (0.05 + (target - 0.05) * repeat.index / 10) | round(2) }}"
+            - delay: 2
+
+  barkwatch_noise_stop:
+    alias: BarkWatch – fade out sleep noise
+    icon: mdi:volume-off
+    mode: single
+    fields:
+      speaker:
+        default: media_player.bedroom_speaker
+        selector:
+          entity:
+            domain: media_player
+    sequence:
+      - variables:
+          speaker: "{{ speaker | default('media_player.bedroom_speaker') }}"
+          start: "{{ state_attr(speaker, 'volume_level') | float(0.2) }}"
+      # Fade out over ~60 s; an abrupt stop can wake light sleepers too
+      - repeat:
+          count: 20
+          sequence:
+            - action: media_player.volume_set
+              target:
+                entity_id: "{{ speaker }}"
+              data:
+                volume_level: "{{ (start * (1 - repeat.index / 20)) | round(2) }}"
+            - delay: 3
+      - action: media_player.media_stop
+        target:
+          entity_id: "{{ speaker }}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.barkwatch_noise_playing
+
+  barkwatch_label_last_episode:
+    alias: BarkWatch – mark last episode as false positive
+    icon: mdi:close-circle
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: barkwatch/garden/cmd
+          payload: >
+            {"action": "label", "label": "not_bark",
+             "id": {{ state_attr('sensor.barkwatch_garden_episodes_7_days', 'last_episode_id') | int(0) }}}
+
+automation:
+  # ---------------------------------------------------------------- alerts
+  - id: barkwatch_threshold_alert
+    alias: BarkWatch – threshold alert
+    description: Notify when barking exceeds the configured rate or daily total (with cooldown).
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id:
+          - sensor.barkwatch_garden_episodes_last_hour
+          - sensor.barkwatch_garden_bark_minutes_today
+    conditions:
+      - condition: state
+        entity_id: input_boolean.barkwatch_notifications
+        state: "on"
+      - condition: or
+        conditions:
+          - condition: state
+            entity_id: input_boolean.barkwatch_notify_quiet_hours_only
+            state: "off"
+          - condition: state
+            entity_id: binary_sensor.barkwatch_quiet_hours
+            state: "on"
+      - condition: template
+        value_template: >
+          {{ states('sensor.barkwatch_garden_episodes_last_hour') | int(0)
+               >= states('input_number.barkwatch_alert_episodes_per_hour') | int(5)
+             or states('sensor.barkwatch_garden_bark_minutes_today') | float(0)
+               >= states('input_number.barkwatch_alert_bark_minutes_today') | float(30) }}
+      - condition: template
+        value_template: >
+          {% set last = this.attributes.last_triggered %}
+          {{ last is none or now() - last
+             > timedelta(minutes=states('input_number.barkwatch_alert_cooldown_minutes') | int(60)) }}
+    actions:
+      - variables:
+          ep_id: "{{ state_attr('sensor.barkwatch_garden_episodes_7_days', 'last_episode_id') }}"
+      - action: notify.mobile_app_my_phone
+        data:
+          title: "🐕 Barking threshold exceeded"
+          message: >
+            {{ states('sensor.barkwatch_garden_episodes_last_hour') }} episodes in the last hour,
+            {{ states('sensor.barkwatch_garden_bark_minutes_today') }} min of barking today
+            ({{ states('sensor.barkwatch_garden_episodes_today') }} episodes).
+            {% if is_state('binary_sensor.barkwatch_quiet_hours', 'on') %}During quiet hours.{% endif %}
+          data:
+            tag: barkwatch-threshold          # replaces the previous alert instead of stacking
+            group: barkwatch
+            url: /dashboard-barkwatch/0
+            clickAction: /dashboard-barkwatch/0
+            actions:
+              - action: "BARKWATCH_FP_{{ ep_id }}"
+                title: Not a bark
+              - action: BARKWATCH_MUTE_2H
+                title: Mute 2 h
+
+  - id: barkwatch_notification_actions
+    alias: BarkWatch – handle notification actions
+    mode: queued
+    triggers:
+      - trigger: event
+        event_type: mobile_app_notification_action
+    conditions:
+      - condition: template
+        value_template: "{{ trigger.event.data.action.startswith('BARKWATCH_') }}"
+    actions:
+      - choose:
+          - conditions: "{{ trigger.event.data.action.startswith('BARKWATCH_FP_') }}"
+            sequence:
+              - action: mqtt.publish
+                data:
+                  topic: barkwatch/garden/cmd
+                  payload: >
+                    {"action": "label", "label": "not_bark",
+                     "id": {{ trigger.event.data.action.replace('BARKWATCH_FP_', '') | int(0) }}}
+          - conditions: "{{ trigger.event.data.action == 'BARKWATCH_MUTE_2H' }}"
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.barkwatch_notifications
+              - delay: "02:00:00"
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.barkwatch_notifications
+
+  - id: barkwatch_quiet_hours_log
+    alias: BarkWatch – log quiet-hour episodes
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: event.barkwatch_garden_episode
+    conditions:
+      - "{{ trigger.to_state.attributes.event_type == 'ended' }}"
+      - condition: state
+        entity_id: binary_sensor.barkwatch_quiet_hours
+        state: "on"
+    actions:
+      - action: logbook.log
+        data:
+          name: BarkWatch
+          entity_id: binary_sensor.barkwatch_garden_barking
+          message: >
+            Quiet-hours barking: {{ trigger.to_state.attributes.duration_s }} s,
+            peak {{ trigger.to_state.attributes.peak_dbfs }} dBFS (episode #{{ trigger.to_state.attributes.id }})
+
+  - id: barkwatch_detector_offline
+    alias: BarkWatch – detector offline
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.barkwatch_garden_barking
+        to: unavailable
+        for: "00:10:00"
+    actions:
+      - action: notify.mobile_app_my_phone
+        data:
+          title: BarkWatch offline
+          message: The bark detector has not reported for 10 minutes.
+          data:
+            tag: barkwatch-offline
+
+  # -------------------------------------------------------------- reports
+  - id: barkwatch_daily_summary
+    alias: BarkWatch – daily summary
+    triggers:
+      - trigger: time
+        at: "21:00:00"
+    conditions:
+      - condition: numeric_state
+        entity_id: sensor.barkwatch_garden_episodes_today
+        above: 0
+    actions:
+      - action: notify.mobile_app_my_phone
+        data:
+          title: "🐕 Today's barking"
+          message: >
+            {{ states('sensor.barkwatch_garden_episodes_today') }} episodes,
+            {{ states('sensor.barkwatch_garden_bark_minutes_today') }} min.
+            First bark: {{ as_timestamp(states('sensor.barkwatch_garden_first_bark_today'), none)
+                           | timestamp_custom('%H:%M', true, '–') }}.
+            7-day total: {{ states('sensor.barkwatch_garden_episodes_7_days') }}.
+          data:
+            tag: barkwatch-daily
+            group: barkwatch
+
+  - id: barkwatch_weekly_summary
+    alias: BarkWatch – weekly summary
+    triggers:
+      - trigger: state
+        entity_id: sensor.barkwatch_garden_weekly_report
+        attribute: label
+    conditions:
+      - "{{ trigger.from_state is not none and trigger.from_state.state not in ['unknown', 'unavailable'] }}"
+    actions:
+      - variables:
+          r: "{{ trigger.to_state.attributes }}"
+      - action: notify.mobile_app_my_phone
+        data:
+          title: "🐕 Weekly bark report {{ r.label }}"
+          message: >
+            {{ r.episodes }} episodes ({{ '%+d' | format(r.change_vs_previous) }} vs last week),
+            {{ r.bark_minutes }} min, {{ r.quiet_hour_episodes }} during quiet hours.
+            Earliest morning bark: {{ r.earliest_morning_bark or '–' }}.
+            {% if r.recurring %}Recurring: {{ r.recurring[0].slot }} ({{ r.recurring[0].days }} days).{% endif %}
+
+  # --------------------------------------------------------- sleep protection
+  - id: barkwatch_sleep_protection_start
+    alias: BarkWatch – start sleep noise on barking
+    description: >
+      During quiet hours, when someone is sleeping, start masking noise in the bedroom as soon
+      as a bark episode is confirmed.
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.barkwatch_garden_barking
+        to: "on"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.barkwatch_sleep_protection
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.barkwatch_quiet_hours
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.barkwatch_bedroom_occupied
+        state: "on"
+      - condition: or
+        conditions:
+          - condition: state
+            entity_id: input_boolean.barkwatch_sleep_protection_weekends_only
+            state: "off"
+          - condition: state
+            entity_id: binary_sensor.barkwatch_day_off
+            state: "on"
+      - condition: state
+        entity_id: input_boolean.barkwatch_noise_playing
+        state: "off"
+      # Don't hijack the speaker if you are deliberately playing something
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: media_player.bedroom_speaker
+            state: playing
+    actions:
+      - action: script.barkwatch_noise_start
+        data:
+          speaker: media_player.bedroom_speaker
+
+  - id: barkwatch_sleep_protection_volume
+    alias: BarkWatch – raise noise volume with bark intensity
+    description: Only ever raises the volume during a night; it is lowered by the fade-out.
+    mode: queued
+    max: 3
+    triggers:
+      - trigger: state
+        entity_id: sensor.barkwatch_noise_target_volume
+    conditions:
+      - condition: state
+        entity_id: input_boolean.barkwatch_noise_playing
+        state: "on"
+      - condition: template
+        value_template: >
+          {{ states('sensor.barkwatch_noise_target_volume') | float(0)
+             > (state_attr('media_player.bedroom_speaker', 'volume_level') | float(1)) + 0.01 }}
+    actions:
+      - repeat:   # ramp over ~10 s
+          count: 5
+          sequence:
+            - action: media_player.volume_set
+              target:
+                entity_id: media_player.bedroom_speaker
+              data:
+                volume_level: >
+                  {% set cur = state_attr('media_player.bedroom_speaker', 'volume_level') | float(0) %}
+                  {% set tgt = states('sensor.barkwatch_noise_target_volume') | float(cur) %}
+                  {{ [cur + (tgt - cur) / (6 - repeat.index), tgt] | min | round(2) }}
+            - delay: 2
+
+  - id: barkwatch_sleep_protection_stop_quiet
+    alias: BarkWatch – stop noise after barking stops
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.barkwatch_garden_barking
+        to: "off"
+        for:
+          minutes: "{{ states('input_number.barkwatch_noise_quiet_minutes') | int(20) }}"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.barkwatch_noise_playing
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.barkwatch_noise_stop_on_silence
+        state: "on"
+    actions:
+      - action: script.barkwatch_noise_stop
+        data:
+          speaker: media_player.bedroom_speaker
+
+  - id: barkwatch_sleep_protection_stop_morning
+    alias: BarkWatch – stop noise when quiet hours end
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.barkwatch_quiet_hours
+        to: "off"
+      - trigger: state
+        entity_id: input_boolean.barkwatch_bedroom_occupied
+        to: "off"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.barkwatch_noise_playing
+        state: "on"
+    actions:
+      - action: script.barkwatch_noise_stop
+        data:
+          speaker: media_player.bedroom_speaker
+
+  - id: barkwatch_sleep_protection_preemptive
+    alias: BarkWatch – start noise before the usual first bark
+    description: >
+      Reactive masking always starts 1-2 s after the first bark. On days off, start the noise
+      20 minutes before the typical first-bark time learned by the weekly report instead.
+    triggers:
+      - trigger: template
+        value_template: >
+          {% set f = state_attr('sensor.barkwatch_garden_weekly_report', 'typical_first_bark') %}
+          {{ f is string and now().strftime('%H:%M')
+             == (today_at(f) - timedelta(minutes=20)).strftime('%H:%M') }}
+    conditions:
+      - condition: state
+        entity_id:
+          - input_boolean.barkwatch_preemptive_noise
+          - input_boolean.barkwatch_sleep_protection
+          - input_boolean.barkwatch_bedroom_occupied
+          - binary_sensor.barkwatch_day_off
+          - binary_sensor.barkwatch_quiet_hours
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.barkwatch_noise_playing
+        state: "off"
+    actions:
+      - action: script.barkwatch_noise_start
+        data:
+          speaker: media_player.bedroom_speaker
+
+  - id: barkwatch_weekend_sleep_protection_arm
+    alias: BarkWatch – arm sleep protection on nights before a day off
+    description: Turns sleep protection on in the evening when the next day is a weekend day.
+    triggers:
+      - trigger: time
+        at: "21:30:00"
+    conditions:
+      - "{{ (now() + timedelta(days=1)).isoweekday() in [6, 7] }}"
+    actions:
+      - action: input_boolean.turn_on
+        target:
+          entity_id:
+            - input_boolean.barkwatch_sleep_protection
+            - input_boolean.barkwatch_bedroom_occupied
+

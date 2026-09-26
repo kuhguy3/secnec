@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+data/
+models/*.tflite
+models/*.csv
+config.yaml
+deploy/mosquitto/passwd

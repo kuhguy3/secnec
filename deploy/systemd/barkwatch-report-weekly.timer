@@ -1,0 +1,11 @@
+[Unit]
+Description=BarkWatch weekly report
+
+[Timer]
+# The report command defaults to "yesterday", i.e. the weekly period that just ended.
+OnCalendar=Mon *-*-* 00:10:00
+Persistent=true
+Unit=barkwatch-report@weekly.service
+
+[Install]
+WantedBy=timers.target

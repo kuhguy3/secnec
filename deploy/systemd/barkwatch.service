@@ -1,0 +1,27 @@
+[Unit]
+Description=BarkWatch dog bark monitor
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=barkwatch
+Group=barkwatch
+SupplementaryGroups=audio plugdev
+WorkingDirectory=/opt/barkwatch
+ExecStart=/opt/barkwatch/venv/bin/python -m barkwatch -c /opt/barkwatch/config.yaml run
+Restart=always
+RestartSec=5
+# Hardening: the service only needs its data dir, the sound card and the network
+ProtectSystem=strict
+ReadWritePaths=/opt/barkwatch/data
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

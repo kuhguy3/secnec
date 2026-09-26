@@ -1,0 +1,8 @@
+[Unit]
+Description=BarkWatch %i report
+
+[Service]
+Type=oneshot
+User=barkwatch
+WorkingDirectory=/opt/barkwatch
+ExecStart=/opt/barkwatch/venv/bin/python -m barkwatch -c /opt/barkwatch/config.yaml report --period %i --publish
