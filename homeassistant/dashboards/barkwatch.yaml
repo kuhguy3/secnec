@@ -1,0 +1,232 @@
+# BarkWatch dashboard (built-in cards only; no HACS required).
+# Settings → Dashboards → Add dashboard → "New dashboard from scratch", URL "dashboard-barkwatch",
+# then ⋮ → Edit → ⋮ → Raw configuration editor, and paste this file.
+title: BarkWatch
+views:
+  - title: Overview
+    path: overview
+    icon: mdi:dog
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Right now
+          - type: tile
+            entity: binary_sensor.barkwatch_garden_barking
+            name: Barking
+            color: red
+          - type: tile
+            entity: binary_sensor.barkwatch_quiet_hours
+            name: Quiet hours
+          - type: tile
+            entity: sensor.barkwatch_garden_episodes_today
+            name: Episodes today
+          - type: tile
+            entity: sensor.barkwatch_garden_bark_minutes_today
+            name: Bark minutes
+          - type: tile
+            entity: sensor.barkwatch_garden_episodes_last_hour
+            name: Last hour
+          - type: tile
+            entity: sensor.barkwatch_garden_first_bark_today
+            name: First bark
+          - type: gauge
+            entity: sensor.barkwatch_garden_level
+            name: Garden level
+            min: -90
+            max: -10
+            needle: true
+            severity:
+              green: -90
+              yellow: -45
+              red: -30
+            grid_options:
+              columns: 12
+          - type: history-graph
+            title: Level vs ambient (24 h)
+            hours_to_show: 24
+            entities:
+              - entity: sensor.barkwatch_garden_level
+                name: Level
+              - entity: sensor.barkwatch_garden_noise_floor
+                name: Ambient
+              - entity: binary_sensor.barkwatch_garden_barking
+                name: Barking
+            grid_options:
+              columns: 12
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Trends
+          - type: statistics-graph
+            title: Episodes per day (30 days)
+            entities:
+              - sensor.barkwatch_garden_episodes_today
+            stat_types: [change]
+            period: day
+            days_to_show: 30
+            chart_type: bar
+            grid_options:
+              columns: 12
+          - type: statistics-graph
+            title: Bark minutes per week
+            entities:
+              - sensor.barkwatch_garden_bark_minutes_today
+            stat_types: [change]
+            period: week
+            days_to_show: 90
+            chart_type: bar
+            grid_options:
+              columns: 12
+          - type: markdown
+            title: Time of day (last 7 days)
+            content: >-
+              {% set h = state_attr('sensor.barkwatch_garden_episodes_7_days', 'hourly_7d') or [] %}
+              {% set mx = (h | max) if h else 0 %}
+              {% if mx == 0 %}No barking recorded in the last 7 days.{% else %}
+              ```
+
+              {% for n in h %}{{ '%02d' | format(loop.index0) }}h {{ '█' * ((n / mx * 24) | round(0, 'ceil') | int) }} {{ n if n else '' }}
+
+              {% endfor %}```
+              {% endif %}
+            grid_options:
+              columns: 12
+          - type: markdown
+            title: Day of week (last 30 days)
+            content: >-
+              {% set w = state_attr('sensor.barkwatch_garden_episodes_7_days', 'weekday_30d') or [] %}
+              {% set names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}
+              {% set mx = (w | max) if w else 0 %}
+              {% if mx %}
+              ```
+
+              {% for n in w %}{{ names[loop.index0] }} {{ '█' * ((n / mx * 24) | round(0, 'ceil') | int) }} {{ n }}
+
+              {% endfor %}```
+              {% endif %}
+            grid_options:
+              columns: 12
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Reports & review
+          - type: markdown
+            title: Last weekly report
+            content: >-
+              {% set e = 'sensor.barkwatch_garden_weekly_report' %}
+              {% set r = states[e].attributes if has_value(e) else {} %}
+              {% if r.label is defined %}
+              **{{ r.label }}** — {{ r.episodes }} episodes
+              ({{ '%+d' | format(r.change_vs_previous) }} vs previous),
+              {{ r.bark_minutes }} min, {{ r.quiet_hour_episodes }} in quiet hours.
+
+              Weekday avg **{{ r.avg_episodes_weekday }}** · weekend avg **{{ r.avg_episodes_weekend }}**
+              · earliest morning bark **{{ r.earliest_morning_bark or '–' }}**
+              · typical first bark **{{ r.typical_first_bark or '–' }}**
+
+              {% for p in r.recurring[:3] %}- Recurring **{{ p.slot }}** on {{ p.days }}/{{ p.of_days }} days ({{ p.weekdays }})
+              {% endfor %}
+              {% else %}No weekly report yet (runs Monday 00:10).{% endif %}
+            grid_options:
+              columns: 12
+          - type: logbook
+            title: Recent episodes
+            hours_to_show: 48
+            target:
+              entity_id:
+                - event.barkwatch_garden_episode
+                - binary_sensor.barkwatch_garden_barking
+            grid_options:
+              columns: 12
+          - type: entities
+            title: Last episode
+            entities:
+              - entity: sensor.barkwatch_garden_last_episode
+                name: Started
+              - entity: sensor.barkwatch_garden_last_episode_duration
+                name: Duration
+              - type: attribute
+                entity: sensor.barkwatch_garden_episodes_7_days
+                attribute: last_episode_peak_dbfs
+                name: Peak level
+                suffix: dBFS
+              - type: button
+                name: Not a bark
+                icon: mdi:close-circle
+                action_name: Mark
+                tap_action:
+                  action: perform-action
+                  perform_action: script.barkwatch_label_last_episode
+          - type: button
+            name: Listen to clips
+            icon: mdi:folder-music
+            tap_action:
+              action: navigate
+              navigation_path: /media-browser/browser/app%2Cmedia-source%3A%2F%2Fmedia_source
+            grid_options:
+              columns: 6
+
+  - title: Sleep & settings
+    path: settings
+    icon: mdi:sleep
+    type: sections
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Sleep protection
+          - type: entities
+            entities:
+              - input_boolean.barkwatch_sleep_protection
+              - input_boolean.barkwatch_sleep_protection_weekends_only
+              - input_boolean.barkwatch_bedroom_occupied
+              - input_boolean.barkwatch_noise_stop_on_silence
+              - input_boolean.barkwatch_preemptive_noise
+              - input_select.barkwatch_noise_colour
+              - input_number.barkwatch_noise_base_volume
+              - input_number.barkwatch_noise_max_volume
+              - input_number.barkwatch_noise_db_per_step
+              - input_number.barkwatch_noise_quiet_minutes
+              - sensor.barkwatch_noise_target_volume
+              - input_boolean.barkwatch_noise_playing
+            grid_options:
+              columns: 12
+          - type: media-control
+            entity: media_player.bedroom_speaker
+            grid_options:
+              columns: 12
+          - type: button
+            name: Test noise
+            icon: mdi:play
+            tap_action:
+              action: perform-action
+              perform_action: script.barkwatch_noise_start
+          - type: button
+            name: Fade out
+            icon: mdi:stop
+            tap_action:
+              action: perform-action
+              perform_action: script.barkwatch_noise_stop
+      - type: grid
+        cards:
+          - type: heading
+            heading: Quiet hours & alerts
+          - type: entities
+            entities:
+              - input_datetime.barkwatch_quiet_start
+              - input_datetime.barkwatch_quiet_end_weekday
+              - input_datetime.barkwatch_quiet_end_weekend
+              - binary_sensor.barkwatch_day_off
+              - type: divider
+              - input_boolean.barkwatch_notifications
+              - input_boolean.barkwatch_notify_quiet_hours_only
+              - input_number.barkwatch_alert_episodes_per_hour
+              - input_number.barkwatch_alert_bark_minutes_today
+              - input_number.barkwatch_alert_cooldown_minutes
+            grid_options:
+              columns: 12

@@ -1,0 +1,46 @@
+# Alternative to the systemd install. Run on the Pi that has the microphone attached.
+# If Home Assistant OS already runs the Mosquitto add-on, delete the mosquitto service
+# and point config.yaml at that broker instead.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports: ["1883:1883"]
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./deploy/mosquitto/passwd:/mosquitto/config/passwd:ro
+      - mosquitto-data:/mosquitto/data
+
+  barkwatch:
+    build: .
+    restart: unless-stopped
+    depends_on: [mosquitto]
+    devices: ["/dev/snd:/dev/snd"]
+    group_add: ["audio"]
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - /etc/localtime:/etc/localtime:ro   # reports and quiet hours use local time
+
+  # Scheduled jobs; alternatively use host cron with `docker compose run --rm barkwatch report ...`
+  barkwatch-cron:
+    build: .
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          now=$$(date +%H:%M); dow=$$(date +%u); dom=$$(date +%d)
+          [ "$$now" = "00:05" ] && python -m barkwatch -c /app/config.yaml report --period daily --publish
+          [ "$$now" = "00:10" ] && [ "$$dow" = "1" ] && python -m barkwatch -c /app/config.yaml report --period weekly --publish
+          [ "$$now" = "00:15" ] && [ "$$dom" = "01" ] && python -m barkwatch -c /app/config.yaml report --period monthly --publish
+          [ "$$now" = "03:30" ] && python -m barkwatch -c /app/config.yaml purge
+          s=$$(date +%S); sleep $$((60 - $${s#0}))   # wake at the start of the next minute
+        done
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - /etc/localtime:/etc/localtime:ro
+
+volumes:
+  mosquitto-data:

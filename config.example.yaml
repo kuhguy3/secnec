@@ -1,0 +1,69 @@
+# BarkWatch configuration. Copy to config.yaml and adjust.
+# Every key is optional; defaults are shown. Unknown keys are rejected (typo protection).
+
+node_id: garden                 # appears in MQTT topics and entity IDs (sensor.barkwatch_garden_*)
+
+audio:
+  device: null                  # `python -m barkwatch devices` lists names/indices; null = default
+  capture_rate: 16000           # 16000, 32000 or 48000 (decimated to 16 kHz internally)
+  channels: 1                   # ReSpeaker USB v2.0 (6-channel firmware): 6
+  channel_index: 0              # ReSpeaker: channel 0 is the processed/beamformed output
+  hop_seconds: 0.48
+  gain_db: 0.0
+
+detector:
+  type: yamnet                  # yamnet (recommended) | heuristic (no ML, Pi Zero friendly)
+  threshold: 0.35               # YAMNet: 0.3-0.5 typical. Heuristic: 0.5-0.7
+  min_level_dbfs: -65.0         # ignore distant/quiet dogs; tune with `calibrate` and `analyze`
+  energy_gate_db: 4.0           # skip inference when level is within 4 dB of the noise floor
+  model_path: models/yamnet.tflite
+  class_map_path: models/yamnet_class_map.csv
+  num_threads: 2
+  # bark_classes / speech_classes: YAMNet display names, see models/yamnet_class_map.csv
+
+events:
+  episode_gap_s: 30             # this much silence ends an episode
+  min_hits: 2                   # positive windows needed to confirm an episode...
+  confirm_window_s: 10          # ...within this time of the first one
+  max_episode_s: 1800
+
+clips:
+  enabled: true
+  directory: data/clips
+  format: flac                  # flac needs `pip install soundfile`; wav otherwise
+  pre_roll_s: 3
+  post_roll_s: 3
+  max_clip_s: 60
+
+storage:
+  database: data/barkwatch.db
+  clip_retention_days: 30
+  false_positive_clip_retention_days: 2
+  event_retention_days: 730
+  minute_stats_retention_days: 90
+  max_clip_storage_mb: 4096
+
+mqtt:
+  enabled: true
+  host: homeassistant.local
+  port: 1883
+  username: barkwatch
+  password: change-me
+  tls: false
+  base_topic: barkwatch
+  discovery_prefix: homeassistant
+  live_interval_s: 5
+  stats_interval_s: 60
+
+reports:
+  directory: data/reports
+  quiet_hours: {start: "22:00", end: "07:00"}          # Sun-Thu nights / Mon-Fri mornings
+  weekend_quiet_hours: {start: "23:00", end: "09:00"}  # Fri-Sat nights / Sat-Sun mornings
+
+privacy:
+  drop_clips_with_speech: true  # YAMNet only: never store a clip in which people were talking
+  speech_threshold: 0.4
+
+doa:                            # ReSpeaker USB Mic Array v2.0 only (pip install pyusb)
+  enabled: false
+  accept_sectors: []            # e.g. [[200, 290]] = only count barks from the neighbour's direction
